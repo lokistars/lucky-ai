@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"io"
 	"lucky-ai/src/com/lucky/ai/api"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ func Server() {
 	http.HandleFunc("/openai", webSocketHandShake)
 	http.HandleFunc("/openai/modelList", gatModelHandle)
 	http.HandleFunc("/openai/modelDetails", gatModelHandle)
+	http.HandleFunc("/images", imageHandle)
 
 	var str string
 	addrs, _ := net.InterfaceAddrs()
@@ -58,7 +60,7 @@ func webSocketHandShake(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		_ = conn.Close()
 	}()
-
+	fmt.Print("Request socket URL:", r.RemoteAddr, ": ")
 	for {
 		_, data, err := conn.ReadMessage()
 
@@ -67,6 +69,7 @@ func webSocketHandShake(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		fmt.Printf("收到消息:%v", data)
+		api.RequestCompletions(string(data))
 	}
 }
 
@@ -76,7 +79,7 @@ func gatModelHandle(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
+	fmt.Print("Request model URL:", r.RemoteAddr, ": ")
 	switch r.Method {
 	case http.MethodGet:
 		if r.URL.Path == "/openai/modelList" {
@@ -90,11 +93,11 @@ func gatModelHandle(w http.ResponseWriter, r *http.Request) {
 		} else if r.URL.Path == "/openai/modelDetails" {
 			value := r.FormValue("model")
 			if "" == value {
-				w.Write([]byte("model is null"))
+				_, _ = w.Write([]byte("model is null"))
 				return
 			}
 			bytes := api.RetrieveModel(value)
-			w.Write(bytes)
+			_, _ = w.Write(bytes)
 		}
 		break
 	default:
@@ -107,15 +110,54 @@ func openAiHandle(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	fmt.Print("Request ai URL:", r.RemoteAddr, ": ")
 	switch r.Method {
 	case http.MethodGet:
 		msg := r.FormValue("msg")
 		if "" == msg {
-			w.Write([]byte("msg is null"))
+			_, _ = w.Write([]byte("msg is null"))
+			fmt.Println()
 			return
 		}
-		bytes := api.RequestOpenAiChat(msg)
-		w.Write(bytes)
+		api.RequestOpenAiChat(msg, w)
+		break
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func imageHandle(w http.ResponseWriter, r *http.Request) {
+	if nil == w || nil == r {
+		http.NotFound(w, r)
+		return
+	}
+	fmt.Print("Request images URL:", r.RemoteAddr, ": ")
+	switch r.Method {
+	case http.MethodGet:
+
+		value := r.FormValue("prompt")
+		if "" == value {
+			_, _ = w.Write([]byte("prompt is null"))
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+
+		images := api.RequestOpenAiImages(value)
+
+		// 读取图像文件
+		file, err := http.Get(images)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		defer file.Body.Close()
+
+		// 将图像写入响应中
+		_, err = io.Copy(w, file.Body)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 		break
 	default:
 		http.NotFound(w, r)

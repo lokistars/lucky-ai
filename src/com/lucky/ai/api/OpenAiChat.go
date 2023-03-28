@@ -11,41 +11,20 @@ import (
 
 var client = &http.Client{}
 
-type request struct {
-	Model       string    `json:"model"`
-	Message     []message `json:"messages"`
-	MaxTokens   int       `json:"-"`
-	Temperature float32   `json:"temperature"`
-	TopP        float32   `json:"top_p"`
-	N           int       `json:"n"`
-	Stream      bool      `json:"stream"`
-	Stop        string    `json:"stop"`
-}
-
-type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type response struct {
-	Model    string
-	messages []string
-	Choices  []struct {
-		Text string `json:"text"`
-	} `json:"choices"`
-}
-
 // RequestOpenAiChat 请求OpenAi 聊天模型
 // https://platform.openai.com/docs/api-reference/introduction 接口文档
-func RequestOpenAiChat(msg string) []byte {
+func RequestOpenAiChat(msg string, w http.ResponseWriter) []byte {
 
 	url := "https://api.openai.com/v1/chat/completions"
+
+	fmt.Println("message:", msg)
+
 	messages := make([]message, 1)
 	messages[0] = message{
 		Role:    "user",
 		Content: msg,
 	}
-	reqData := request{
+	reqData := requestChat{
 		Model:       "gpt-3.5-turbo",
 		Message:     messages,
 		Temperature: 0.5,
@@ -63,42 +42,57 @@ func RequestOpenAiChat(msg string) []byte {
 			_ = resp.Body.Close()
 		}
 	}()
+	scanner := bufio.NewScanner(resp.Body)
+	role := ""
 
-	reader := bufio.NewReader(resp.Body)
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Transfer-Encoding", "chunked") // 支持分块传输
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
-	decoder := json.NewDecoder(reader)
-	decoder.UseNumber()
-	for {
-		var delta struct {
-			Role string `json:"role"`
+	for scanner.Scan() {
+		line := scanner.Text()[6:]
+		if line == "[DONE]" {
+			fmt.Println()
+			_, _ = w.Write([]byte("\n"))
+			break
 		}
-		err := decoder.Decode(&delta)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Println("Error:", err)
+		res := responseChat{}
+		_ = json.Unmarshal([]byte(line), &res)
+		scanner.Scan()
+		choices := res.Choices[0]
+		if choices.FinishReason == "stop" {
+			role = ""
 			continue
 		}
-		switch delta.Role {
-		case "batch":
-			break
+		if role == "" {
+			role = choices.Delta.Role
+		}
+		switch role {
+		case "assistant":
+			//_, _ = w.Write([]byte(choices.Delta.Content))
+			_, _ = io.WriteString(w, choices.Delta.Content)
+			flusher.Flush()
+
+			// 实现流式响应
+			//encoder := json.NewEncoder(w)
+			//encoder.Encode(choices.Delta.Content)
+			//w.(http.Flusher).Flush()
 		case "additions":
-			fmt.Printf("Completion: %s\n", decoder)
+		case "batch":
 		case "selection":
-			break
 		default:
-			fmt.Println("Unknown delta role:", delta.Role)
+			fmt.Println("Unknown delta role:", choices.Delta.Role)
 			break
 		}
+
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	fmt.Println("成功,返回结果：", string(body))
-
-	return body
+	return nil
 }
 
+// RequestCompletions 请求OpenAi 智能补全模型
 func RequestCompletions(msg string) []byte {
 	url := "https://api.openai.com/v1/completions"
 	type request struct {
